@@ -1,5 +1,5 @@
 use crate::shared::DataPacket;
-use rrplug::{wrappers::vector::Vector3};
+use rrplug::wrappers::vector::Vector3;
 use std::{
     io::{Read, Write},
     net::TcpStream,
@@ -55,8 +55,13 @@ impl PlayerMirrorClient {
 
         _ = conn.read(&mut buffer); // usually just spews useless errors
 
-        let position: Vec<DataPacket> =
-            bincode::deserialize(&buffer).expect("couldn't deserialize");
+        let position: Vec<DataPacket> = match bincode::deserialize(&buffer) {
+            Ok(packet) => packet,
+            Err(err) => {
+                log::warn!("server sent bad packet {err}");
+                return;
+            }
+        };
 
         if position.len() < self.player_positons.len() {
             return;

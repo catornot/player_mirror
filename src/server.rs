@@ -110,5 +110,7 @@ impl PlayerMirrorServer {
                 }
             }
         }
+
+        self.connections.retain(|c| c.is_some())
     }
 }
