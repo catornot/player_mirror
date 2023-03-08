@@ -45,43 +45,24 @@ fn main() {
     let mut server = PlayerMirrorServer::new();
     server.bind("192.168.0.243:8081".to_owned()).unwrap();
 
-    // let pos = Vector3::from([9668.0, -8032.0, -197.0]);
-    let v = Vector3::from([0.0, 0.0, 0.0]);
+    server.push_position_to_streams(Vector3::from([11356., -2619., -204.])).unwrap();
 
-    server.player_positons[6] = Vector3::from([11356., -2619., -204.]);
+    let mut saved_pos: [Vector3; 16] = server.get_positions_from_streams().unwrap();
 
-    let mut saved_pos: [Vector3; 15] = [
-        v,
-        v,
-        v,
-        v,
-        v,
-        v,
-        v,
-        v,
-        v,
-        v,
-        v,
-        v,
-        v,
-        v,
-        v,
-    ];
+    server.push_position_to_streams(Vector3::from([11356., -2619., -204.])).unwrap();
 
     loop {
-        server.get_positions_from_streams();
+        let positions = server.get_positions_from_streams().unwrap();
 
         for (index, pos) in saved_pos
             .iter()
             .enumerate()
-            .filter(|e| &server.player_positons[e.0] != e.1)
+            .filter(|e| &positions[e.0] != e.1)
         {
             println!("{index} changed to {pos:?}");
         }
 
-        saved_pos = server.player_positons;
-
-        server.push_positions_to_streams(v);
+        saved_pos = positions;
 
         _ = server.accept_connection();
 

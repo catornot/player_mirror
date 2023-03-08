@@ -259,30 +259,31 @@ fn runframe(player_pos: Vector3, func_move_dummies: fn(i32, Vector3)) {
     match &mut *mirrortype {
         MirroringType::Server(s) => {
             if s.is_listening() {
-                s.get_positions_from_streams();
+                let player_positions = s.get_positions_from_streams();
 
-                let zero = Vector3::from([0., 0., 0.]);
+                if let Ok(player_positions) = player_positions {
+                    let zero = Vector3::from([0., 0., 0.]);
 
-                for (index, vector) in s
-                    .player_positons
-                    .to_vec()
-                    .iter()
-                    .filter(|v| v != &&zero) // since we don't clear positions this should be ok
-                    .enumerate()
-                {
-                    let index = index as i32;
-                    if let Err(err) = call_sq_object_function!(
-                        sqvm,
-                        sq_functions,
-                        func_move_dummies,
-                        index,
-                        vector
-                    ) {
-                        err.log()
+                    for (index, vector) in player_positions
+                        .to_vec()
+                        .iter()
+                        .filter(|v| v != &&zero) // since we don't clear positions this should be ok
+                        .enumerate()
+                    {
+                        let index = index as i32;
+                        if let Err(err) = call_sq_object_function!(
+                            sqvm,
+                            sq_functions,
+                            func_move_dummies,
+                            index,
+                            vector
+                        ) {
+                            err.log()
+                        }
                     }
-                }
+                };
 
-                s.push_positions_to_streams(player_pos);
+                _ = s.push_position_to_streams(player_pos);
 
                 _ = s.accept_connection(); // spams too many useless errors >:(
             }

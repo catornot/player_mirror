@@ -3,6 +3,9 @@ use rrplug::wrappers::vector::Vector3;
 use serde::{Deserialize, Serialize};
 use std::mem::transmute;
 
+pub const VEC_PACKET_SIZE: usize = 256;
+pub const SINGLE_PACKET_SIZE: usize = 16;
+
 #[derive(Serialize, Deserialize, Debug,Clone)]
 pub struct DataPacket {
     pub x: f32,

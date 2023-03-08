@@ -1,4 +1,4 @@
-use crate::shared::DataPacket;
+use crate::shared::{DataPacket, VEC_PACKET_SIZE};
 use rrplug::wrappers::vector::Vector3;
 use std::{
     io::{Read, Write},
@@ -51,7 +51,7 @@ impl PlayerMirrorClient {
             .as_mut()
             .expect("someone forgot to handle an option");
 
-        let mut buffer = vec![0; 256];
+        let mut buffer = vec![0; VEC_PACKET_SIZE];
 
         _ = conn.read(&mut buffer); // usually just spews useless errors
 
