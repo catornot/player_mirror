@@ -1,8 +1,9 @@
 use rrplug::prelude::wait;
 use rrplug::wrappers::vector::Vector3;
 
-use crate::client::PlayerMirrorClient;
+// use crate::client::PlayerMirrorClient;
 use crate::server::PlayerMirrorServer;
+use log::{Level, Metadata, Record, LevelFilter};
 
 mod client;
 mod server;
@@ -41,15 +42,46 @@ mod shared;
 //     }
 // }
 
-fn main() {
-    let mut server = PlayerMirrorServer::new();
-    server.bind("192.168.0.243:8081".to_owned()).unwrap();
+#[allow(dead_code)]
+static LOGGER: PlayerMirrorServerLogger = PlayerMirrorServerLogger {};
 
-    server.push_position_to_streams(Vector3::from([11356., -2619., -204.])).unwrap();
+struct PlayerMirrorServerLogger {}
+
+impl log::Log for PlayerMirrorServerLogger {
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        metadata.level() <= Level::Info
+    }
+
+    fn log(&self, record: &Record) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+
+        println!(
+            "{} {}",
+            record.level(),
+            record.args()
+        )
+    }
+
+    fn flush(&self) {}
+}
+
+fn main() {
+    log::set_logger(&LOGGER).map(|()| log::set_max_level(LevelFilter::Info)).unwrap();
+
+    let mut server = PlayerMirrorServer::new();
+    server.bind("192.168.0.243:8080".to_owned()).unwrap();
+
+    server
+        .push_position_to_streams(Vector3::from([11356., -2619., -204.]))
+        .unwrap();
 
     let mut saved_pos: [Vector3; 16] = server.get_positions_from_streams().unwrap();
 
-    server.push_position_to_streams(Vector3::from([11356., -2619., -204.])).unwrap();
+    server
+        .push_position_to_streams(Vector3::from([11356., -2619., -204.]))
+        .unwrap();
 
     loop {
         let positions = server.get_positions_from_streams().unwrap();

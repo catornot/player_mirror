@@ -1,4 +1,4 @@
-use crate::shared::{DataPacket, SINGLE_PACKET_SIZE};
+use crate::shared::{DataPacket, Positions, WorkerMessage, SINGLE_PACKET_SIZE};
 use rrplug::{log, prelude::wait, wrappers::vector::Vector3};
 use std::{
     io::{Read, Write},
@@ -9,13 +9,6 @@ use std::{
     },
     thread::{self, JoinHandle},
 };
-
-type Positions = [Vector3; 16];
-
-enum WorkerMessage {
-    Work(TcpStream),
-    Death,
-}
 
 #[derive(Debug)]
 pub struct PlayerMirrorServer {
@@ -40,7 +33,7 @@ impl PlayerMirrorServer {
         const SIZE: usize = 15;
 
         let mut workers = Vec::with_capacity(SIZE);
-        for id in 0..SIZE {
+        for id in 0..(SIZE - 1) {
             workers.push(ConnectionWorker::new(
                 id,
                 receiver.clone(),
@@ -124,6 +117,15 @@ impl PlayerMirrorServer {
 
 impl Drop for PlayerMirrorServer {
     fn drop(&mut self) {
+        let lock_poision = self.player_positions.clone();
+
+        thread::spawn(move || {
+            let lock = lock_poision.write().unwrap();
+            let thing = lock[0];
+            _ = thing;
+            panic!();
+        }); // this will poision the lock making it invalid and forcing threads to stop
+
         let lock = self.sender.lock().unwrap();
 
         for worker in self.workers.iter() {
@@ -147,35 +149,48 @@ impl ConnectionWorker {
         positions: Arc<RwLock<Positions>>,
     ) -> Self {
         Self {
-            thread: Some(thread::spawn(move || loop {
-                let message = jobs.lock().unwrap().recv().unwrap(); // should never panic if it does
-                                                                    // managing the error is needing or else the mutex might get poisoned
-
-                let stream = match message {
-                    WorkerMessage::Work(w) => w,
-                    WorkerMessage::Death => return,
-                };
-
-                log::info!("connection created for {id}");
-
-                match stream.set_nonblocking(false) {
-                    Ok(_) => log::info!("{id} is blocking"),
-                    Err(err) => {
-                        log::error!("{id} is non blocking {err}");
-                        continue;
-                    }
-                }
-
-                Self::work(id, stream, &positions);
-
-                log::error!("connection terminated for {id}");
+            thread: Some(thread::spawn(move || {
+                Self::job_handler(id, jobs, positions)
             })),
             id,
         }
     }
 
+    fn job_handler(
+        id: usize,
+        jobs: Arc<Mutex<Receiver<WorkerMessage>>>,
+        positions: Arc<RwLock<Positions>>,
+    ) {
+        loop {
+            let message = jobs.lock().unwrap().recv().unwrap(); // should never panic if it does
+                                                                // managing the error is needing or else the mutex might get poisoned
+
+            let stream = match message {
+                WorkerMessage::Work(stream) => stream,
+                WorkerMessage::Death => break,
+                _ => continue,
+            };
+
+            log::info!("connection created for {id}");
+
+            match stream.set_nonblocking(false) {
+                Ok(_) => log::info!("{id} is blocking"),
+                Err(err) => {
+                    log::error!("{id} is non blocking {err}");
+                    continue;
+                }
+            }
+
+            Self::work(id, stream, &positions);
+
+            log::error!("connection terminated for {id}");
+        }
+
+        log::warn!("{id} worker was told to stop");
+    }
+
     fn work(id: usize, mut stream: TcpStream, positions: &Arc<RwLock<Positions>>) {
-        let zero = Vector3::from([0.,0.,0.]);
+        let zero = Vector3::from([0., 0., 0.]);
 
         loop {
             let mut buffer = vec![0; SINGLE_PACKET_SIZE];

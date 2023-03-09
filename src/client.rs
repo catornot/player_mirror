@@ -1,34 +1,64 @@
-use crate::shared::{DataPacket, VEC_PACKET_SIZE};
-use rrplug::wrappers::vector::Vector3;
+use crate::shared::{DataPacket, Position, Positions, WorkerMessage, VEC_PACKET_SIZE};
+use rrplug::{prelude::wait, wrappers::vector::Vector3};
 use std::{
     io::{Read, Write},
     net::TcpStream,
+    sync::{
+        mpsc::{self, Receiver, Sender},
+        Arc, Mutex, RwLock,
+    },
+    thread::{self, JoinHandle},
 };
 
 #[derive(Debug)]
 pub struct PlayerMirrorClient {
-    pub player_positons: [Vector3; 16], // max 15 players
-    conn: Option<TcpStream>,
+    pub player_positons: Arc<RwLock<Positions>>, // max 15 players
+    connnected: bool,
+    job_send: Mutex<Sender<WorkerMessage>>,
+    pos_send: Mutex<Sender<Position>>,
+    worker: PacketWorker,
 }
 
 impl PlayerMirrorClient {
     pub fn new() -> Self {
         let v = Vector3::from((0., 0., 0.));
+
+        let player_positions = Arc::new(RwLock::new([
+            v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v,
+        ]));
+
+        let (job_send, job_recv) = mpsc::channel();
+        let (pos_send, pos_recv) = mpsc::channel();
+
+        let worker = PacketWorker::new(job_recv, player_positions.clone(), pos_recv);
+
         Self {
-            player_positons: [v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v],
-            conn: None,
+            player_positons: player_positions,
+            connnected: false,
+            job_send: Mutex::new(job_send),
+            pos_send: Mutex::new(pos_send),
+            worker,
         }
     }
 
     pub fn connect(&mut self, address: String) -> Result<(), String> {
-        if let Some(c) = self.conn.take() {
-            drop(c);
+        if self.connnected {
+            self.job_send
+                .lock()
+                .expect("lock not acquired")
+                .send(WorkerMessage::EndJob)
+                .unwrap();
         }
+
+        self.connnected = true;
 
         match TcpStream::connect(address) {
             Ok(conn) => {
-                conn.set_nonblocking(true).expect("cannot set non blocking");
-                self.conn = Some(conn);
+                self.job_send
+                    .lock()
+                    .expect("lock not acquired")
+                    .send(WorkerMessage::Work(conn))
+                    .unwrap();
                 Ok(())
             }
             Err(err) => Err(err.to_string()),
@@ -36,55 +66,194 @@ impl PlayerMirrorClient {
     }
 
     pub fn shutdown(&mut self) {
-        if let Some(c) = self.conn.take() {
-            drop(c);
+        if self.connnected {
+            self.job_send
+                .lock()
+                .expect("lock not acquired")
+                .send(WorkerMessage::EndJob)
+                .unwrap();
         }
+
+        self.connnected = false
     }
 
     pub fn is_connected(&self) -> bool {
-        self.conn.is_some()
+        self.connnected
     }
 
-    pub fn get_other_positions(&mut self) {
-        let conn = self
-            .conn
-            .as_mut()
-            .expect("someone forgot to handle an option");
+    pub fn get_other_positions(&self) -> Positions {
+        *self.player_positons.read().unwrap()
+    }
 
-        let mut buffer = vec![0; VEC_PACKET_SIZE];
+    pub fn push_position(&self, local_position: Vector3) -> Result<(), &'static str> {
+        self.pos_send
+            .lock()
+            .expect("lock not acquired")
+            .send(local_position)
+            .or(Err("can't send stuff"))
+    }
+}
 
-        _ = conn.read(&mut buffer); // usually just spews useless errors
+impl Drop for PlayerMirrorClient {
+    fn drop(&mut self) {
+        let lock_poision = self.player_positons.clone();
 
-        let position: Vec<DataPacket> = match bincode::deserialize(&buffer) {
-            Ok(packet) => packet,
-            Err(err) => {
-                log::warn!("server sent bad packet {err}");
-                return;
+        thread::spawn(move || {
+            let lock = lock_poision.write().unwrap();
+            let thing = lock[0];
+            _ = thing;
+            panic!();
+        }); // this will poision the lock making it invalid and forcing thread to stop
+
+        let lock = self.job_send.lock().unwrap();
+
+        _ = lock.send(WorkerMessage::EndJob);
+        _ = lock.send(WorkerMessage::Death);
+
+        _ = self.worker;
+    }
+}
+
+#[derive(Debug)]
+struct PacketWorker {
+    thread: Option<JoinHandle<()>>,
+}
+
+impl PacketWorker {
+    fn new(
+        jobs: Receiver<WorkerMessage>,
+        positions: Arc<RwLock<Positions>>,
+        local_positions_recv: Receiver<Position>,
+    ) -> Self {
+        Self {
+            thread: Some(thread::spawn(move || {
+                Self::job_handler(jobs, positions, local_positions_recv)
+            })),
+        }
+    }
+
+    fn job_handler(
+        jobs: Receiver<WorkerMessage>,
+        positions: Arc<RwLock<Positions>>,
+        local_positions_recv: Receiver<Position>,
+    ) {
+        loop {
+            let message = jobs.recv().unwrap(); // should never panic if it does
+                                                // managing the error is needing or else the mutex might get poisoned
+
+            let stream = match message {
+                WorkerMessage::Work(stream) => stream,
+                WorkerMessage::Death => break,
+                _ => continue,
+            };
+
+            log::info!("connection created for Stream");
+
+            match stream.set_nonblocking(false) {
+                Ok(_) => log::info!("stream is blocking"),
+                Err(err) => {
+                    log::error!("stream is non blocking {err}");
+                    continue;
+                }
             }
-        };
 
-        if position.len() < self.player_positons.len() {
-            return;
+            wait(10);
+
+            Self::work(stream, &positions, &local_positions_recv, &jobs);
+
+            log::error!("connection terminated for client");
         }
 
-        self.player_positons = position
-            .into_iter()
-            .map(|p| p.into())
-            .collect::<Vec<Vector3>>()
-            .try_into()
-            .expect("not the right lenght of Vec<DataPacket>");
+        log::warn!("worker was told to stop");
     }
 
-    pub fn push_position(&mut self, local_position: Vector3) {
-        let conn = self
-            .conn
-            .as_mut()
-            .expect("someone forgot to handle an option");
+    fn work(
+        mut stream: TcpStream,
+        positions: &Arc<RwLock<Positions>>,
+        local_positions_recv: &Receiver<Position>,
+        termination_notice: &Receiver<WorkerMessage>,
+    ) {
+        let mut last_known_local_position: Position = Vector3::from([0., 0., 0.]);
 
-        let lp: DataPacket = local_position.into();
+        loop {
+            if let Ok(WorkerMessage::EndJob) = termination_notice.try_recv() {
+                return;
+            }
 
-        let positions = bincode::serialize(&lp).expect("couldn't serialize");
+            let local_pos = local_positions_recv
+                .try_recv()
+                .unwrap_or(last_known_local_position);
+            
+            if last_known_local_position != local_pos {
+                last_known_local_position = local_pos;
+            }
 
-        _ = conn.write(&positions); // usually just spews useless errors
+            {
+                let local_pos: DataPacket = local_pos.into();
+
+                let sendpackets = match bincode::serialize(&local_pos) {
+                    Ok(s) => s,
+                    Err(err) => {
+                        log::error!("couldn't serialize packets : {err}");
+                        return;
+                    }
+                };
+
+                match stream.write_all(&sendpackets) {
+                    Ok(_) => {}
+                    Err(err) => log::error!("failed to write all : {err}"),
+                }
+            }
+
+            let mut buffer = vec![0; VEC_PACKET_SIZE];
+
+            match stream.read(&mut buffer) {
+                Ok(_) => {}
+                Err(err) => {
+                    log::error!("failed to read : {err}");
+                    return;
+                }
+            }
+
+            let recvpackets: Vec<DataPacket> = match bincode::deserialize(&buffer) {
+                Ok(p) => p,
+                Err(err) => {
+                    log::error!("couldn't deserialize packet : {err}");
+                    return;
+                }
+            };
+
+            {
+                let mut positions = match positions.write() {
+                    Ok(p) => p,
+                    Err(err) => {
+                        log::error!("couldn't get lock : {err}");
+                        return;
+                    }
+                };
+
+                match recvpackets
+                    .into_iter()
+                    .map(|p| p.into())
+                    .collect::<Vec<Position>>()
+                    .try_into()
+                {
+                    Ok(p) => *positions = p,
+                    Err(_) => log::error!("failed to set new positions"),
+                }
+            }
+
+            wait(100);
+        }
+    }
+}
+
+impl Drop for PacketWorker {
+    fn drop(&mut self) {
+        log::warn!("Shutting down client connection thread");
+
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
     }
 }

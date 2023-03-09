@@ -6,7 +6,7 @@ use std::mem::transmute;
 pub const VEC_PACKET_SIZE: usize = 256;
 pub const SINGLE_PACKET_SIZE: usize = 16;
 
-#[derive(Serialize, Deserialize, Debug,Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DataPacket {
     pub x: f32,
     pub y: f32,
@@ -30,4 +30,13 @@ impl Into<Vector3> for DataPacket {
 pub enum MirroringType {
     Server(PlayerMirrorServer),
     Client(PlayerMirrorClient),
+}
+pub type Position = Vector3;
+
+pub type Positions = [Position; 16];
+
+pub enum WorkerMessage {
+    Work(std::net::TcpStream),
+    Death,
+    EndJob,
 }

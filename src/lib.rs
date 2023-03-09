@@ -221,6 +221,7 @@ fn wait_for_full_startup() {
     {
         entity dummy = CreateExpensiveScriptMoverModel( $"models/humans/heroes/mlt_hero_jack.mdl", <0,0,0>, <0,0,0>, SOLID_VPHYSICS, -1 )
         dummy.kv.skin = PILOT_SKIN_INDEX_GHOST
+        dummy.NotSolid()
         dummy.SetScriptName(x.tostring())
     }
 
@@ -290,12 +291,11 @@ fn runframe(player_pos: Vector3, func_move_dummies: fn(i32, Vector3)) {
         }
         MirroringType::Client(c) => {
             if c.is_connected() {
-                c.get_other_positions();
+                let player_positons = c.get_other_positions();
 
                 let zero = Vector3::from([0., 0., 0.]);
 
-                for (index, vector) in c
-                    .player_positons
+                for (index, vector) in player_positons
                     .to_vec()
                     .iter()
                     .filter(|v| v != &&zero)
@@ -317,7 +317,9 @@ fn runframe(player_pos: Vector3, func_move_dummies: fn(i32, Vector3)) {
                     }
                 }
 
-                c.push_position(player_pos);
+                if let Err(err) = c.push_position(player_pos) {
+                    log::warn!("{err}");
+                }
             }
         }
     }
