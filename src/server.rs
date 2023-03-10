@@ -1,8 +1,9 @@
-use crate::shared::{DataPacket, Positions, WorkerMessage, SINGLE_PACKET_SIZE};
-use rrplug::{log, prelude::wait, wrappers::vector::Vector3};
+use crate::shared::{PlayerInfo, PlayerInfoArray, WorkerMessage, SINGLE_PACKET_SIZE};
+use rrplug::{log, prelude::wait};
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
+    ops::Deref,
     sync::{
         mpsc::{self, Receiver, Sender},
         Arc, Mutex, RwLock,
@@ -12,7 +13,7 @@ use std::{
 
 #[derive(Debug)]
 pub struct PlayerMirrorServer {
-    pub player_positions: Arc<RwLock<Positions>>, // max 16 players
+    pub player_positions: Arc<RwLock<PlayerInfoArray>>, // max 16 players
     listener: Option<TcpListener>,
     workers: Vec<ConnectionWorker>,
     sender: Mutex<Sender<WorkerMessage>>,
@@ -20,11 +21,15 @@ pub struct PlayerMirrorServer {
 
 impl PlayerMirrorServer {
     pub fn new() -> Self {
-        let v = Vector3::from((0., 0., 0.));
+        let info = PlayerInfo::default();
 
-        let positions = Arc::new(RwLock::new([
-            v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v,
-        ]));
+        let positions = (0..16)
+            .map(|_| info.clone())
+            .collect::<Vec<PlayerInfo>>()
+            .try_into()
+            .unwrap();
+
+        let positions = Arc::new(RwLock::new(positions));
 
         let (sender, receiver) = mpsc::channel();
         let receiver = Arc::new(Mutex::new(receiver));
@@ -91,25 +96,25 @@ impl PlayerMirrorServer {
         Ok(())
     }
 
-    pub fn get_positions_from_streams(&mut self) -> Result<Positions, &'static str> {
+    pub fn get_positions_from_streams(&mut self) -> Result<PlayerInfoArray, &'static str> {
         let lock = self
             .player_positions
             .write()
             .or(Err("can't have locks in ohio"))?;
 
-        let mut positions = *lock;
+        let mut positions = lock.deref().clone();
 
-        positions[15] = Vector3::from([0., 0., 0.]); // this is the local player on the server
+        positions[15] = PlayerInfo::default(); // this is the local player on the server
 
         Ok(positions)
     }
 
-    pub fn push_position_to_streams(&self, local_pos: Vector3) -> Result<(), &'static str> {
+    pub fn push_position_to_streams(&self, info: PlayerInfo) -> Result<(), &'static str> {
         let mut lock = self
             .player_positions
             .write()
             .or(Err("can't have locks in ohio"))?;
-        *lock.get_mut(15).unwrap() = local_pos; // ^ or try_write?
+        *lock.get_mut(15).unwrap() = info; // ^ or try_write?
 
         Ok(())
     }
@@ -120,11 +125,10 @@ impl Drop for PlayerMirrorServer {
         let lock_poision = self.player_positions.clone();
 
         thread::spawn(move || {
+            #[allow(unused_variables)]
             let lock = lock_poision.write().unwrap();
-            let thing = lock[0];
-            _ = thing;
             panic!();
-        }); // this will poision the lock making it invalid and forcing threads to stop
+        }); // this will poision the lock making it invalid and forcing thread to stop
 
         let lock = self.sender.lock().unwrap();
 
@@ -146,7 +150,7 @@ impl ConnectionWorker {
     fn new(
         id: usize,
         jobs: Arc<Mutex<Receiver<WorkerMessage>>>,
-        positions: Arc<RwLock<Positions>>,
+        positions: Arc<RwLock<PlayerInfoArray>>,
     ) -> Self {
         Self {
             thread: Some(thread::spawn(move || {
@@ -159,7 +163,7 @@ impl ConnectionWorker {
     fn job_handler(
         id: usize,
         jobs: Arc<Mutex<Receiver<WorkerMessage>>>,
-        positions: Arc<RwLock<Positions>>,
+        positions: Arc<RwLock<PlayerInfoArray>>,
     ) {
         loop {
             let message = jobs.lock().unwrap().recv().unwrap(); // should never panic if it does
@@ -189,15 +193,16 @@ impl ConnectionWorker {
         log::warn!("{id} worker was told to stop");
     }
 
-    fn work(id: usize, mut stream: TcpStream, positions: &Arc<RwLock<Positions>>) {
-        let zero = Vector3::from([0., 0., 0.]);
+    fn work(id: usize, mut stream: TcpStream, positions: &Arc<RwLock<PlayerInfoArray>>) {
+        let zero = PlayerInfo::default();
+        let mut player_positions = Vec::with_capacity(16);
 
         loop {
             let mut buffer = vec![0; SINGLE_PACKET_SIZE];
 
             _ = stream.read(&mut buffer);
 
-            let recvpacket: DataPacket = match bincode::deserialize(&buffer) {
+            let recvpacket: PlayerInfo = match bincode::deserialize(&buffer) {
                 Ok(p) => p,
                 Err(err) => {
                     log::error!("couldn't deserialize packet : {err}");
@@ -205,7 +210,7 @@ impl ConnectionWorker {
                 }
             };
 
-            let mut player_positions = {
+            {
                 let mut positions = match positions.write() {
                     Ok(p) => p,
                     Err(err) => {
@@ -214,16 +219,12 @@ impl ConnectionWorker {
                     }
                 };
 
-                positions[id] = recvpacket.into();
+                positions[id] = recvpacket;
 
-                positions
-                    .iter()
-                    .copied()
-                    .map(|p| p.into())
-                    .collect::<Vec<DataPacket>>()
+                player_positions.extend_from_slice(&(*positions))
             };
 
-            player_positions[id] = zero.into();
+            player_positions[id] = zero.clone();
 
             let sendpackets = match bincode::serialize(&player_positions) {
                 Ok(s) => s,
@@ -234,6 +235,8 @@ impl ConnectionWorker {
             };
 
             _ = stream.write_all(&sendpackets);
+
+            player_positions.clear();
 
             wait(100);
         }

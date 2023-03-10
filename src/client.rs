@@ -1,8 +1,9 @@
-use crate::shared::{DataPacket, Position, Positions, WorkerMessage, VEC_PACKET_SIZE};
-use rrplug::{prelude::wait, wrappers::vector::Vector3};
+use crate::shared::{PlayerInfo, PlayerInfoArray, WorkerMessage, VEC_PACKET_SIZE};
+use rrplug::prelude::wait;
 use std::{
     io::{Read, Write},
     net::TcpStream,
+    ops::Deref,
     sync::{
         mpsc::{self, Receiver, Sender},
         Arc, Mutex, RwLock,
@@ -12,20 +13,24 @@ use std::{
 
 #[derive(Debug)]
 pub struct PlayerMirrorClient {
-    pub player_positons: Arc<RwLock<Positions>>, // max 15 players
+    pub player_positons: Arc<RwLock<PlayerInfoArray>>, // max 15 players
     connnected: bool,
     job_send: Mutex<Sender<WorkerMessage>>,
-    pos_send: Mutex<Sender<Position>>,
+    pos_send: Mutex<Sender<PlayerInfo>>,
     worker: PacketWorker,
 }
 
 impl PlayerMirrorClient {
     pub fn new() -> Self {
-        let v = Vector3::from((0., 0., 0.));
+        let info = PlayerInfo::default();
 
-        let player_positions = Arc::new(RwLock::new([
-            v, v, v, v, v, v, v, v, v, v, v, v, v, v, v, v,
-        ]));
+        let player_postions = (0..16)
+            .map(|_| info.clone())
+            .collect::<Vec<PlayerInfo>>()
+            .try_into()
+            .unwrap();
+
+        let player_positions = Arc::new(RwLock::new(player_postions));
 
         let (job_send, job_recv) = mpsc::channel();
         let (pos_send, pos_recv) = mpsc::channel();
@@ -81,15 +86,15 @@ impl PlayerMirrorClient {
         self.connnected
     }
 
-    pub fn get_other_positions(&self) -> Positions {
-        *self.player_positons.read().unwrap()
+    pub fn get_other_positions(&self) -> PlayerInfoArray {
+        self.player_positons.read().unwrap().deref().clone()
     }
 
-    pub fn push_position(&self, local_position: Vector3) -> Result<(), &'static str> {
+    pub fn push_position(&self, info: PlayerInfo) -> Result<(), &'static str> {
         self.pos_send
             .lock()
             .expect("lock not acquired")
-            .send(local_position)
+            .send(info)
             .or(Err("can't send stuff"))
     }
 }
@@ -99,9 +104,8 @@ impl Drop for PlayerMirrorClient {
         let lock_poision = self.player_positons.clone();
 
         thread::spawn(move || {
+            #[allow(unused_variables)]
             let lock = lock_poision.write().unwrap();
-            let thing = lock[0];
-            _ = thing;
             panic!();
         }); // this will poision the lock making it invalid and forcing thread to stop
 
@@ -122,8 +126,8 @@ struct PacketWorker {
 impl PacketWorker {
     fn new(
         jobs: Receiver<WorkerMessage>,
-        positions: Arc<RwLock<Positions>>,
-        local_positions_recv: Receiver<Position>,
+        positions: Arc<RwLock<PlayerInfoArray>>,
+        local_positions_recv: Receiver<PlayerInfo>,
     ) -> Self {
         Self {
             thread: Some(thread::spawn(move || {
@@ -134,8 +138,8 @@ impl PacketWorker {
 
     fn job_handler(
         jobs: Receiver<WorkerMessage>,
-        positions: Arc<RwLock<Positions>>,
-        local_positions_recv: Receiver<Position>,
+        positions: Arc<RwLock<PlayerInfoArray>>,
+        local_positions_recv: Receiver<PlayerInfo>,
     ) {
         loop {
             let message = jobs.recv().unwrap(); // should never panic if it does
@@ -169,11 +173,11 @@ impl PacketWorker {
 
     fn work(
         mut stream: TcpStream,
-        positions: &Arc<RwLock<Positions>>,
-        local_positions_recv: &Receiver<Position>,
+        positions: &Arc<RwLock<PlayerInfoArray>>,
+        local_positions_recv: &Receiver<PlayerInfo>,
         termination_notice: &Receiver<WorkerMessage>,
     ) {
-        let mut last_known_local_position: Position = Vector3::from([0., 0., 0.]);
+        let mut last_known_local_position: PlayerInfo = PlayerInfo::default();
 
         loop {
             if let Ok(WorkerMessage::EndJob) = termination_notice.try_recv() {
@@ -182,15 +186,13 @@ impl PacketWorker {
 
             let local_pos = local_positions_recv
                 .try_recv()
-                .unwrap_or(last_known_local_position);
-            
+                .unwrap_or(last_known_local_position.clone());
+
             if last_known_local_position != local_pos {
-                last_known_local_position = local_pos;
+                last_known_local_position = local_pos.clone();
             }
 
             {
-                let local_pos: DataPacket = local_pos.into();
-
                 let sendpackets = match bincode::serialize(&local_pos) {
                     Ok(s) => s,
                     Err(err) => {
@@ -215,7 +217,7 @@ impl PacketWorker {
                 }
             }
 
-            let recvpackets: Vec<DataPacket> = match bincode::deserialize(&buffer) {
+            let recvpackets: Vec<PlayerInfo> = match bincode::deserialize(&buffer) {
                 Ok(p) => p,
                 Err(err) => {
                     log::error!("couldn't deserialize packet : {err}");
@@ -232,12 +234,7 @@ impl PacketWorker {
                     }
                 };
 
-                match recvpackets
-                    .into_iter()
-                    .map(|p| p.into())
-                    .collect::<Vec<Position>>()
-                    .try_into()
-                {
+                match recvpackets.try_into() {
                     Ok(p) => *positions = p,
                     Err(_) => log::error!("failed to set new positions"),
                 }

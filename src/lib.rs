@@ -3,13 +3,13 @@
     clippy::declare_interior_mutable_const
 )]
 
-use client::PlayerMirrorClient;
+use rrplug::prelude::*;
 use rrplug::{
     bindings::{
         convar::{FCVAR_GAMEDLL, FCVAR_SPONLY},
         squirreldatatypes::SQObject,
     },
-    sq_raise_error, sq_return_null,
+    call_sq_object_function, sq_raise_error, sq_return_null,
     wrappers::{
         northstar::{EngineLoadType, PluginData, ScriptVmType},
         squirrel::{call_sq_function, compile_string},
@@ -17,12 +17,16 @@ use rrplug::{
     },
     OnceCell,
 };
-use rrplug::{call_sq_object_function, prelude::*};
-use server::PlayerMirrorServer;
-use shared::MirroringType;
 use std::sync::RwLock;
+use {
+    client::PlayerMirrorClient,
+    inlined_squirrel::SQURRIEL_CODE,
+    server::PlayerMirrorServer,
+    shared::{MirroringType, PlayerInfo},
+};
 
 mod client;
+mod inlined_squirrel;
 mod server;
 mod shared;
 
@@ -216,31 +220,7 @@ fn server_setup(command: CCommandResult) {
 
 #[rrplug::sqfunction(VM=Server,ExportName=WaitForFullStartup)]
 fn wait_for_full_startup() {
-    if compile_string(sqvm, sq_functions, true, r#"
-    for(int x = 0; x < 16; x++)
-    {
-        entity dummy = CreateExpensiveScriptMoverModel( $"models/humans/heroes/mlt_hero_jack.mdl", <0,0,0>, <0,0,0>, SOLID_VPHYSICS, -1 )
-        dummy.kv.skin = PILOT_SKIN_INDEX_GHOST
-        dummy.NotSolid()
-        dummy.SetScriptName(x.tostring())
-    }
-
-    thread void function() 
-    {
-        for(;;)
-        {
-            MirrorPlayerRunFrame( GetPlayerArray()[0].GetOrigin(), void function( int index, vector pos )
-            {
-                entity dummy = GetEntByScriptName(index.tostring())
-        
-                dummy.NonPhysicsMoveTo( pos, 0.1, 0.000000000001, 0.0000000000001 )
-            } )
-            wait 0
-        };
-    }()
-
-    
-    "#).is_err() {
+    if compile_string(sqvm, sq_functions, true, SQURRIEL_CODE).is_err() {
         sq_raise_error!("can't compile anything in ohio", sqvm, sq_functions);
     }
 
@@ -248,7 +228,12 @@ fn wait_for_full_startup() {
 }
 
 #[rrplug::sqfunction(VM=Server,ExportName=MirrorPlayerRunFrame)]
-fn runframe(player_pos: Vector3, func_move_dummies: fn(i32, Vector3)) {
+fn runframe(
+    player_pos: Vector3,
+    player_viewangle: Vector3,
+    action: i32,
+    func_move_dummies: fn(i32, Vector3, Vector3, i32),
+) {
     let mut mirrortype = match PLUGIN.wait().mirrortype.wait().try_write() {
         Ok(mirrortype) => mirrortype,
         Err(err) => {
@@ -265,10 +250,10 @@ fn runframe(player_pos: Vector3, func_move_dummies: fn(i32, Vector3)) {
                 if let Ok(player_positions) = player_positions {
                     let zero = Vector3::from([0., 0., 0.]);
 
-                    for (index, vector) in player_positions
+                    for (index, info) in player_positions
                         .to_vec()
                         .iter()
-                        .filter(|v| v != &&zero) // since we don't clear positions this should be ok
+                        .filter(|v| v.get_position() != zero) // since we don't clear positions this should be ok
                         .enumerate()
                     {
                         let index = index as i32;
@@ -277,14 +262,20 @@ fn runframe(player_pos: Vector3, func_move_dummies: fn(i32, Vector3)) {
                             sq_functions,
                             func_move_dummies,
                             index,
-                            vector
+                            info.get_position(),
+                            info.get_viewangle(),
+                            info.action.clone() as i32
                         ) {
                             err.log()
                         }
                     }
                 };
 
-                _ = s.push_position_to_streams(player_pos);
+                _ = s.push_position_to_streams(PlayerInfo::new(
+                    player_pos,
+                    player_viewangle,
+                    action.try_into().unwrap(),
+                ));
 
                 _ = s.accept_connection(); // spams too many useless errors >:(
             }
@@ -295,13 +286,17 @@ fn runframe(player_pos: Vector3, func_move_dummies: fn(i32, Vector3)) {
 
                 let zero = Vector3::from([0., 0., 0.]);
 
-                for (index, vector) in player_positons
+                for (index, info) in player_positons
                     .to_vec()
                     .iter()
-                    .filter(|v| v != &&zero)
+                    .filter(|v| v.get_position() != zero)
                     .enumerate()
                 {
-                    if vector == &player_pos {
+                    let sent_player_pos = info.get_position();
+                    let sent_player_viewangle = info.get_viewangle();
+                    let sent_action = info.action.clone() as i32;
+
+                    if sent_player_pos == player_pos {
                         continue;
                     }
 
@@ -311,13 +306,19 @@ fn runframe(player_pos: Vector3, func_move_dummies: fn(i32, Vector3)) {
                         sq_functions,
                         func_move_dummies,
                         index,
-                        vector
+                        sent_player_pos,
+                        sent_player_viewangle,
+                        sent_action
                     ) {
                         err.log()
                     }
                 }
 
-                if let Err(err) = c.push_position(player_pos) {
+                if let Err(err) = c.push_position(PlayerInfo::new(
+                    player_pos,
+                    player_viewangle,
+                    action.try_into().unwrap(),
+                )) {
                     log::warn!("{err}");
                 }
             }
