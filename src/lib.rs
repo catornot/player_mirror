@@ -30,6 +30,7 @@ mod inlined_squirrel;
 mod server;
 mod shared;
 
+
 #[derive(Debug)]
 pub struct PlayerMirror {
     mirrortype: OnceCell<RwLock<MirroringType>>,

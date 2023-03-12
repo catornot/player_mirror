@@ -1,4 +1,8 @@
 pub const SQURRIEL_CODE: &str = r#"
+
+if ( IsLobby() )
+    return
+
 for(int x = 0; x < 16; x++)
 {
     entity dummy = CreateExpensiveScriptMoverModel( $"models/humans/heroes/mlt_hero_jack.mdl", <0,0,0>, <0,0,0>, SOLID_VPHYSICS, -1 )
