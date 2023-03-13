@@ -61,17 +61,16 @@ thread void function()
             dummy.NonPhysicsMoveTo( origin, 0.1, 0.000000000001, 0.0000000000001 )
             dummy.NonPhysicsRotateTo( angles, 0.1, 0.000000000001, 0.0000000000001 )
             
-            string anim; // stand anim
+            string anim = "ACT_MP_CROUCHWALK_FORWARD"; // default is crouch
 
             switch( action )
             {
                 case 0: // slide
                     anim = "ACT_MP_CROUCHWALK_FORWARD"
                     break
+                case 2: // stand todo have a proper anim for it later
                 case 1: // run
                     anim = "Sprint_mp_forward"
-                    break
-                case 2: // stand
                     break
                 case 3: // jump / fall
                     anim = "jump_start"
@@ -90,10 +89,7 @@ thread void function()
                     break
             }
 
-            if ( IsValid( anim ) )
-                dummy.Anim_Play( anim )
-            else 
-                dummy.Anim_Stop()
+            dummy.Anim_Play( anim )
         } )
         wait 0
     };

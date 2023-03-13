@@ -15,9 +15,9 @@ log = "0.4.17"
 [build-dependencies]
 windres = "0.2.2"
 
-[lib]
-crate-type = ["cdylib"]
+# [lib]
+# crate-type = ["cdylib"]
 
-# [[bin]]
-# name = "test"
-# path = "src/test.rs"
+[[bin]]
+name = "test"
+path = "src/test.rs"

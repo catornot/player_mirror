@@ -76,7 +76,7 @@ fn main() {
     let fakeinfo = PlayerInfo::new(
         Vector3::from([11356., -2619., -204.]),
         Vector3::from([0., 0., 0.]),
-        0.try_into().unwrap(),
+        2.try_into().unwrap(),
     );
 
     server.push_position_to_streams(fakeinfo.clone()).unwrap();
